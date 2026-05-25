@@ -140,7 +140,8 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stTextInput"] label,
 label { color: #ccc !important; font-size: 0.88rem !important; }
 
-input[type="text"], input[type="date"], [data-baseweb="input"] input {
+input[type="text"], input[type="date"], [data-baseweb="input"] input,
+textarea, [data-baseweb="textarea"] textarea {
     background: #1a1a1a !important;
     border: 1px solid #333 !important;
     color: #fff !important;
@@ -221,10 +222,10 @@ def get_gmt7_time_ms() -> dict:
 
 
 # ─── Thuật toán sinh số 3 chữ số ─────────────────────────────────
-def generate_3_digit(epoch_ms: int, dob: datetime.date) -> dict:
+def generate_3_digit(epoch_ms: int, dob: datetime.date, custom_text: str = "") -> dict:
     """
     Thuật toán:
-    1. Tạo seed từ epoch_ms XOR dob_hash
+    1. Tạo seed từ epoch_ms XOR dob_hash XOR custom_hash
     2. Áp dụng Linear Congruential Generator (LCG)
     3. Kết hợp thêm sin/cos từ từng thành phần để tăng entropy
     4. Lấy mod 1000 → số 3 chữ số (000–999)
@@ -233,8 +234,15 @@ def generate_3_digit(epoch_ms: int, dob: datetime.date) -> dict:
     dob_str   = dob.strftime("%d%m%Y")
     dob_hash  = int(hashlib.sha256(dob_str.encode()).hexdigest(), 16) % (10**15)
 
-    # Bước 2: XOR epoch_ms với dob_hash
-    seed = (epoch_ms ^ dob_hash) & 0xFFFFFFFFFFFF
+    # Bước 1b: Hash chuỗi tùy chỉnh (nếu có)
+    custom_text_clean = custom_text.strip()[:300]
+    if custom_text_clean:
+        custom_hash = int(hashlib.sha256(custom_text_clean.encode("utf-8")).hexdigest(), 16) % (10**15)
+    else:
+        custom_hash = 0
+
+    # Bước 2: XOR epoch_ms với dob_hash và custom_hash
+    seed = (epoch_ms ^ dob_hash ^ custom_hash) & 0xFFFFFFFFFFFF
 
     # Bước 3: LCG — hệ số từ Numerical Recipes
     LCG_A = 1664525
@@ -260,12 +268,14 @@ def generate_3_digit(epoch_ms: int, dob: datetime.date) -> dict:
     combined = (lcg_val ^ mix_int ^ (epoch_ms % 9973)) % 1000
 
     return {
-        "number":   f"{combined:03d}",
-        "seed":     seed,
-        "lcg_val":  lcg_val,
-        "mix_int":  mix_int,
-        "combined": combined,
-        "dob_hash": dob_hash % 999999,   # hiển thị gọn
+        "number":      f"{combined:03d}",
+        "seed":        seed,
+        "lcg_val":     lcg_val,
+        "mix_int":     mix_int,
+        "combined":    combined,
+        "dob_hash":    dob_hash % 999999,
+        "custom_hash": custom_hash % 999999,
+        "has_custom":  bool(custom_text_clean),
     }
 
 
@@ -291,6 +301,20 @@ with st.container():
             f"<div style='color:#888;font-size:0.8rem;margin-top:8px;'>🕐 Thời gian lấy trực tiếp<br>từ <span style='color:#FFD700'>worldtimeapi.org</span> (GMT+7)</div>",
             unsafe_allow_html=True
         )
+
+    custom_text = st.text_area(
+        "🔮 Chuỗi bí mật (tùy chọn) — tối đa 300 ký tự",
+        value="",
+        max_chars=300,
+        height=90,
+        placeholder="Nhập bất kỳ thứ gì: tên, câu thần chú, số điện thoại, suy nghĩ… để xào vào công thức 🎲",
+    )
+    char_count = len(custom_text.strip())
+    if char_count > 0:
+        st.markdown(
+            f"<div style='text-align:right;color:#FFD700;font-size:0.75rem;margin-top:-0.5rem;'>{char_count}/300 ký tự</div>",
+            unsafe_allow_html=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown('<div class="deco">◆ ◆ ◆</div>', unsafe_allow_html=True)
@@ -300,7 +324,7 @@ if st.button("✨ QUAY SỐ NGAY", key="spin"):
     with st.spinner("Đang lấy thời gian thực..."):
         time_data = get_gmt7_time_ms()
 
-    result = generate_3_digit(time_data["epoch_ms"], dob)
+    result = generate_3_digit(time_data["epoch_ms"], dob, custom_text)
 
     # Hiển thị kết quả
     st.markdown(f"""
@@ -315,6 +339,16 @@ if st.button("✨ QUAY SỐ NGAY", key="spin"):
 
     # Chi tiết thuật toán
     with st.expander("🔍 Chi tiết thuật toán"):
+        custom_step_html = ""
+        if result["has_custom"]:
+            custom_step_html = f"""
+        <div class="step-row">
+            <div class="step-dot">2b</div>
+            <div>Hash SHA-256 chuỗi bí mật
+            → <span class="step-val">{result['custom_hash']:,}</span> (rút gọn)</div>
+        </div>"""
+        xor_label = "epoch_ms ⊕ dob_hash ⊕ custom_hash" if result["has_custom"] else "epoch_ms ⊕ dob_hash"
+
         st.markdown(f"""
         <div style="font-size:0.82rem;">
         <div class="step-row">
@@ -327,9 +361,10 @@ if st.button("✨ QUAY SỐ NGAY", key="spin"):
             <div>Hash SHA-256 ngày sinh <span class="step-val">{dob.strftime('%d/%m/%Y')}</span>
             → <span class="step-val">{result['dob_hash']:,}</span> (rút gọn)</div>
         </div>
+        {custom_step_html}
         <div class="step-row">
             <div class="step-dot">3</div>
-            <div>XOR epoch_ms ⊕ dob_hash → seed:
+            <div>XOR {xor_label} → seed:
             <span class="step-val">{result['seed']:,}</span></div>
         </div>
         <div class="step-row">
